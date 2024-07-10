@@ -2,7 +2,11 @@ package main
 
 import (
 	"crypto/rand"
+	"errors"
 	"fmt"
+	"github.com/charmbracelet/bubbles/filepicker"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/esimov/stackblur-go"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -11,9 +15,20 @@ import (
 	"os"
 	"path"
 	"strings"
-
-	"github.com/esimov/stackblur-go"
+	"time"
 )
+
+type model struct {
+	filepicker   filepicker.Model
+	selectedFile string
+	quitting     bool
+	err          error
+}
+
+type colors struct {
+	base8   []string
+	pallete []string
+}
 
 func getImage(imagePath string) (img image.Image, err error) {
 	file, err := os.Open(imagePath)
@@ -101,16 +116,139 @@ func sliceImage(img image.Image, grid int) (tiles []image.Image) {
 	return
 }
 
+type clearErrorMsg struct{}
+
+func clearErrorAfter(t time.Duration) tea.Cmd {
+	return tea.Tick(t, func(_ time.Time) tea.Msg {
+		return clearErrorMsg{}
+	})
+}
+
+func (m model) Init() tea.Cmd {
+	return m.filepicker.Init()
+}
+
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c", "q":
+			m.quitting = true
+			return m, tea.Quit
+		}
+	case clearErrorMsg:
+		m.err = nil
+	}
+
+	var cmd tea.Cmd
+	m.filepicker, cmd = m.filepicker.Update(msg)
+
+	// Did the user select a file?
+	if didSelect, path := m.filepicker.DidSelectFile(msg); didSelect {
+		// Get the path of the selected file.
+		m.selectedFile = path
+	}
+
+	// Did the user select a disabled file?
+	// This is only necessary to display an error to the user.
+	if didSelect, path := m.filepicker.DidSelectDisabledFile(msg); didSelect {
+		// Let's clear the selectedFile and display an error.
+		m.err = errors.New(path + " is not valid.")
+		m.selectedFile = ""
+		return m, tea.Batch(cmd, clearErrorAfter(2*time.Second))
+	}
+
+	return m, cmd
+}
+
+func (m model) View() string {
+	if m.quitting {
+		return ""
+	}
+	var s strings.Builder
+	s.WriteString("\n  ")
+	if m.err != nil {
+		s.WriteString(m.filepicker.Styles.DisabledFile.Render(m.err.Error()))
+	} else if m.selectedFile == "" {
+		s.WriteString("Pick a file:")
+	} else {
+		s.WriteString("Selected file: " + m.filepicker.Styles.Selected.Render(m.selectedFile))
+	}
+	s.WriteString("\n\n" + m.filepicker.View() + "\n")
+	return s.String()
+}
+
 func main() {
 
+	fp := filepicker.New()
+	fp.AllowedTypes = []string{".jpg", ".jpeg", ".png"}
+	fp.CurrentDirectory, _ = os.UserHomeDir()
+
+	m := model{
+		filepicker: fp,
+	}
+	tm, _ := tea.NewProgram(&m).Run()
+	mm := tm.(model)
+	fmt.Println("\n  You selected: " + m.filepicker.Styles.Selected.Render(mm.selectedFile) + "\n")
 	imageExists, _ := exists(os.Args[1])
 	if imageExists == false {
 		println("Path does not exists")
 		os.Exit(0)
 	}
 
+	p := colors{}
+
+	var base8 []string
+
+	var pallete []string
+
 	img, _ := getImage(os.Args[1])
 
+	darkestColor := color.RGBA{255, 255, 255, 255} // Initialize with the brightest color
+	bounds := img.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			col := img.At(x, y)
+			r, g, b, _ := col.RGBA()
+			rgbaCol := color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), 255}
+
+			// Calculate luminance
+			luminance := 0.2126*float64(rgbaCol.R) + 0.7152*float64(rgbaCol.G) + 0.0722*float64(rgbaCol.B)
+
+			// Update darkestColor if this color has lower luminance
+			if luminance < 0.2126*float64(darkestColor.R)+0.7152*float64(darkestColor.G)+0.0722*float64(darkestColor.B) {
+				darkestColor = rgbaCol
+			}
+		}
+	}
+
+	n := 8
+	colors := make([]color.RGBA, 0)
+	for i := 0; i < n; i++ {
+		colors = append(colors, darkestColor)
+
+		// Make the color 5% lighter
+		darkestColor.R = uint8(float64(darkestColor.R) + 0.125*255)
+		darkestColor.G = uint8(float64(darkestColor.G) + 0.125*255)
+		darkestColor.B = uint8(float64(darkestColor.B) + 0.125*255)
+
+		// Make sure the color components don't exceed 255
+		if darkestColor.R > 255 {
+			darkestColor.R = 255
+		}
+		if darkestColor.G > 255 {
+			darkestColor.G = 255
+		}
+		if darkestColor.B > 255 {
+			darkestColor.B = 255
+		}
+
+	}
+
+	for _, col := range colors {
+		hexColor := fmt.Sprintf("#%02x%02x%02x", col.R, col.G, col.B)
+		base8 = append(base8, hexColor)
+	}
 	blurred_img, _ := stackblur.Process(img, 30)
 
 	tiles := sliceImage(blurred_img, 4)
@@ -136,7 +274,13 @@ func main() {
 			}
 		}
 		hexColor := fmt.Sprintf("#%02x%02x%02x", mostFrequentColor.R, mostFrequentColor.G, mostFrequentColor.B)
-		fmt.Println(mostFrequentColor, hexColor)
+
+		pallete = append(pallete, hexColor)
+
 	}
 
+	p.pallete = pallete
+	p.base8 = base8
+	fmt.Println(p.pallete)
+	fmt.Println(p.base8)
 }
