@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"github.com/charmbracelet/bubbles/filepicker"
@@ -18,6 +17,8 @@ import (
 	"time"
 )
 
+// TYPES
+
 type model struct {
 	filepicker   filepicker.Model
 	selectedFile string
@@ -29,6 +30,8 @@ type colors struct {
 	base8   []string
 	pallete []string
 }
+
+// PATH FUNCTIONS
 
 func getImage(imagePath string) (img image.Image, err error) {
 	file, err := os.Open(imagePath)
@@ -53,38 +56,7 @@ func getImage(imagePath string) (img image.Image, err error) {
 	return
 }
 
-func exists(path string) (bool, error) {
-	_, err := os.Stat(path)
-	if err == nil {
-		return true, nil
-	}
-	if os.IsNotExist(err) {
-		return false, nil
-	}
-	return false, err
-}
-
-func randomString() string {
-	b := make([]byte, 11)
-	rand.Read(b)
-	return fmt.Sprintf("%x", b)[2:11]
-}
-
-func save_image(img image.Image) (cache_path string, err error) {
-	cache_path = fmt.Sprintf("/tmp/%s.png", randomString())
-
-	f1, err := os.Create(cache_path)
-	if err != nil {
-		err = fmt.Errorf("failed to create file: %v", err)
-	}
-	defer f1.Close()
-
-	if err = png.Encode(f1, img); err != nil {
-		err = fmt.Errorf("failed to encode: %v", err)
-	}
-
-	return
-}
+// IMAGE FUNCTIONS
 
 func sliceImage(img image.Image, grid int) (tiles []image.Image) {
 	tiles = make([]image.Image, 0, grid*grid)
@@ -116,6 +88,96 @@ func sliceImage(img image.Image, grid int) (tiles []image.Image) {
 	return
 }
 
+func getPallete(img image.Image) (cols []color.RGBA, hexColors []string) {
+
+	blurred_img, _ := stackblur.Process(img, 30)
+
+	tiles := sliceImage(blurred_img, 4)
+
+	cols = make([]color.RGBA, 0)
+	hexColors = make([]string, 0)
+	for _, tile := range tiles {
+		colors := make(map[color.RGBA]int)
+		bounds := tile.Bounds()
+		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+			for x := bounds.Min.X; x < bounds.Max.X; x++ {
+				col := tile.At(x, y)
+				r, g, b, a := col.RGBA()
+				rgbaCol := color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), uint8(a >> 8)}
+				colors[rgbaCol]++
+
+			}
+		}
+		var mostFrequentColor color.RGBA
+		maxCount := 0
+		for col, count := range colors {
+			if count > maxCount {
+				maxCount = count
+				mostFrequentColor = col
+			}
+		}
+		hexColor := fmt.Sprintf("#%02x%02x%02x", mostFrequentColor.R, mostFrequentColor.G, mostFrequentColor.B)
+
+		hexColors = append(hexColors, hexColor)
+		cols = append(cols, mostFrequentColor)
+
+	}
+
+	return
+}
+
+func getBase8(img image.Image) (colors []color.RGBA, hexColors []string) {
+	darkestColor := color.RGBA{255, 255, 255, 255} // Initialize with the brightest color
+	bounds := img.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			col := img.At(x, y)
+			r, g, b, _ := col.RGBA()
+			rgbaCol := color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), 255}
+
+			// Calculate luminance
+			luminance := 0.2126*float64(rgbaCol.R) + 0.7152*float64(rgbaCol.G) + 0.0722*float64(rgbaCol.B)
+
+			// Update darkestColor if this color has lower luminance
+			if luminance < 0.2126*float64(darkestColor.R)+0.7152*float64(darkestColor.G)+0.0722*float64(darkestColor.B) {
+				darkestColor = rgbaCol
+			}
+		}
+	}
+
+	n := 8
+	colors = make([]color.RGBA, 0)
+	hexColors = make([]string, 0)
+	for i := 0; i < n; i++ {
+		colors = append(colors, darkestColor)
+
+		// Make the color 12.5% lighter (12.5 * 8 == 100)
+		darkestColor.R = uint8(float64(darkestColor.R) + 0.125*255)
+		darkestColor.G = uint8(float64(darkestColor.G) + 0.125*255)
+		darkestColor.B = uint8(float64(darkestColor.B) + 0.125*255)
+
+		// Make sure the color components don't exceed 255
+		if darkestColor.R > 255 {
+			darkestColor.R = 255
+		}
+		if darkestColor.G > 255 {
+			darkestColor.G = 255
+		}
+		if darkestColor.B > 255 {
+			darkestColor.B = 255
+		}
+
+	}
+
+	for _, col := range colors {
+		hexColor := fmt.Sprintf("#%02x%02x%02x", col.R, col.G, col.B)
+		hexColors = append(hexColors, hexColor)
+	}
+
+	return
+}
+
+// BUBBLES FUNCTIONS
 type clearErrorMsg struct{}
 
 func clearErrorAfter(t time.Duration) tea.Cmd {
@@ -189,98 +251,7 @@ func main() {
 	}
 	tm, _ := tea.NewProgram(&m).Run()
 	mm := tm.(model)
+
 	fmt.Println("\n  You selected: " + m.filepicker.Styles.Selected.Render(mm.selectedFile) + "\n")
-	imageExists, _ := exists(os.Args[1])
-	if imageExists == false {
-		println("Path does not exists")
-		os.Exit(0)
-	}
 
-	p := colors{}
-
-	var base8 []string
-
-	var pallete []string
-
-	img, _ := getImage(os.Args[1])
-
-	darkestColor := color.RGBA{255, 255, 255, 255} // Initialize with the brightest color
-	bounds := img.Bounds()
-	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-		for x := bounds.Min.X; x < bounds.Max.X; x++ {
-			col := img.At(x, y)
-			r, g, b, _ := col.RGBA()
-			rgbaCol := color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), 255}
-
-			// Calculate luminance
-			luminance := 0.2126*float64(rgbaCol.R) + 0.7152*float64(rgbaCol.G) + 0.0722*float64(rgbaCol.B)
-
-			// Update darkestColor if this color has lower luminance
-			if luminance < 0.2126*float64(darkestColor.R)+0.7152*float64(darkestColor.G)+0.0722*float64(darkestColor.B) {
-				darkestColor = rgbaCol
-			}
-		}
-	}
-
-	n := 8
-	colors := make([]color.RGBA, 0)
-	for i := 0; i < n; i++ {
-		colors = append(colors, darkestColor)
-
-		// Make the color 5% lighter
-		darkestColor.R = uint8(float64(darkestColor.R) + 0.125*255)
-		darkestColor.G = uint8(float64(darkestColor.G) + 0.125*255)
-		darkestColor.B = uint8(float64(darkestColor.B) + 0.125*255)
-
-		// Make sure the color components don't exceed 255
-		if darkestColor.R > 255 {
-			darkestColor.R = 255
-		}
-		if darkestColor.G > 255 {
-			darkestColor.G = 255
-		}
-		if darkestColor.B > 255 {
-			darkestColor.B = 255
-		}
-
-	}
-
-	for _, col := range colors {
-		hexColor := fmt.Sprintf("#%02x%02x%02x", col.R, col.G, col.B)
-		base8 = append(base8, hexColor)
-	}
-	blurred_img, _ := stackblur.Process(img, 30)
-
-	tiles := sliceImage(blurred_img, 4)
-
-	for _, tile := range tiles {
-		colors := make(map[color.RGBA]int)
-		bounds := tile.Bounds()
-		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-			for x := bounds.Min.X; x < bounds.Max.X; x++ {
-				col := tile.At(x, y)
-				r, g, b, a := col.RGBA()
-				rgbaCol := color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), uint8(a >> 8)}
-				colors[rgbaCol]++
-
-			}
-		}
-		var mostFrequentColor color.RGBA
-		maxCount := 0
-		for col, count := range colors {
-			if count > maxCount {
-				maxCount = count
-				mostFrequentColor = col
-			}
-		}
-		hexColor := fmt.Sprintf("#%02x%02x%02x", mostFrequentColor.R, mostFrequentColor.G, mostFrequentColor.B)
-
-		pallete = append(pallete, hexColor)
-
-	}
-
-	p.pallete = pallete
-	p.base8 = base8
-	fmt.Println(p.pallete)
-	fmt.Println(p.base8)
 }
