@@ -13,6 +13,8 @@ import (
 	"math"
 	"os"
 	"path"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -29,6 +31,26 @@ type model struct {
 type colors struct {
 	base8   []string
 	pallete []string
+}
+
+type ColorSlice []color.RGBA
+
+// SORT FUNCTIONS
+func (p ColorSlice) Len() int      { return len(p) }
+func (p ColorSlice) Swap(i, j int) { p[i], p[j] = p[j], p[i] }
+func (p ColorSlice) Less(i, j int) bool {
+	// Compare red components
+	if p[i].R != p[j].R {
+		return p[i].R < p[j].R
+	}
+
+	// Compare green components
+	if p[i].G != p[j].G {
+		return p[i].G < p[j].G
+	}
+
+	// Compare blue components
+	return p[i].B < p[j].B
 }
 
 // PATH FUNCTIONS
@@ -177,7 +199,30 @@ func getBase8(img image.Image) (colors []color.RGBA, hexColors []string) {
 	return
 }
 
+func sortHexColors(hexColors []string) []string {
+	// Convert the hex colors to color.RGBA values
+	colors := make([]color.RGBA, len(hexColors))
+	for i, hex := range hexColors {
+		r, _ := strconv.ParseUint(hex[1:3], 16, 8)
+		g, _ := strconv.ParseUint(hex[3:5], 16, 8)
+		b, _ := strconv.ParseUint(hex[5:7], 16, 8)
+		colors[i] = color.RGBA{uint8(r), uint8(g), uint8(b), 255}
+	}
+
+	// Sort the colors
+	sort.Sort(ColorSlice(colors))
+
+	// Convert the sorted colors back to hex codes
+	sortedHexColors := make([]string, len(colors))
+	for i, c := range colors {
+		sortedHexColors[i] = fmt.Sprintf("#%02x%02x%02x", c.R, c.G, c.B)
+	}
+
+	return sortedHexColors
+}
+
 // BUBBLES FUNCTIONS
+
 type clearErrorMsg struct{}
 
 func clearErrorAfter(t time.Duration) tea.Cmd {
@@ -209,6 +254,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if didSelect, path := m.filepicker.DidSelectFile(msg); didSelect {
 		// Get the path of the selected file.
 		m.selectedFile = path
+		return m, tea.Quit
 	}
 
 	// Did the user select a disabled file?
@@ -240,6 +286,8 @@ func (m model) View() string {
 	return s.String()
 }
 
+// MAIN FUNCTION
+
 func main() {
 
 	fp := filepicker.New()
@@ -254,4 +302,17 @@ func main() {
 
 	fmt.Println("\n  You selected: " + m.filepicker.Styles.Selected.Render(mm.selectedFile) + "\n")
 
+	img, _ := getImage(mm.selectedFile)
+	_, hexbases := getBase8(img)
+	_, hexpal := getPallete(img)
+	sortedHexColors := sortHexColors(hexpal)
+	for i, j := 0, len(sortedHexColors)-1; i < j; i, j = i+1, j-1 {
+		sortedHexColors[i], sortedHexColors[j] = sortedHexColors[j], sortedHexColors[i]
+	}
+
+	fmt.Println("Background to foreground")
+	fmt.Println(hexbases)
+
+	fmt.Println("Prominent Colors")
+	fmt.Println(sortedHexColors)
 }
